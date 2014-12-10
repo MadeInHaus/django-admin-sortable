@@ -1,33 +1,42 @@
 import json
 
-from django import VERSION as DJANGO_VERSION
+from django import VERSION
 from django.contrib.contenttypes.generic import (GenericStackedInline,
     GenericTabularInline)
 
-DJANGO_MINOR_VERSION = DJANGO_VERSION[1]
-
 from django.conf import settings
 
-if DJANGO_MINOR_VERSION < 5:
+if VERSION < (1, 5):
     from django.conf.urls.defaults import patterns, url
 else:
     from django.conf.urls import patterns, url
 
 from django.contrib.admin import ModelAdmin, TabularInline, StackedInline
 from django.contrib.admin.options import InlineModelAdmin
+
+if VERSION >= (1, 8):
+    from django.contrib.auth import get_permission_codename
+
 from django.contrib.contenttypes.models import ContentType
 from django.http import HttpResponse
 from django.shortcuts import render
 from django.template.defaultfilters import capfirst
 
-from adminsortable.utils import get_is_sortable
-from adminsortable.fields import SortableForeignKey
+from adminsortable.utils import get_is_sortable, check_model_is_sortable
 from adminsortable.models import Sortable
 
 STATIC_URL = settings.STATIC_URL
 
 
 class SortableAdminBase(object):
+    sortable_change_list_with_sort_link_template = \
+        'adminsortable/change_list_with_sort_link.html'
+    sortable_change_form_template = 'adminsortable/change_form.html'
+    sortable_change_list_template = 'adminsortable/change_list.html'
+
+    change_form_template_extends = 'admin/change_form.html'
+    change_list_template_extends = 'admin/change_list.html'
+
     def changelist_view(self, request, extra_context=None):
         """
         If the model that inherits Sortable has more than one object,
@@ -35,7 +44,9 @@ class SortableAdminBase(object):
         object_tools block to take people to the view to change the sorting.
         """
 
-        if get_is_sortable(self.queryset(request)):
+        qs_method = getattr(self, 'get_queryset', self.queryset)
+
+        if get_is_sortable(qs_method(request)):
             self.change_list_template = \
                 self.sortable_change_list_with_sort_link_template
             self.is_sortable = True
@@ -44,7 +55,9 @@ class SortableAdminBase(object):
             extra_context = {}
 
         extra_context.update({
-            'change_list_template_extends': self.change_list_template_extends
+            'change_list_template_extends': self.change_list_template_extends,
+            'sorting_filters': [sort_filter[0] for sort_filter
+                in getattr(self.model, 'sorting_filters', [])]
         })
         return super(SortableAdminBase, self).changelist_view(request,
             extra_context=extra_context)
@@ -55,39 +68,20 @@ class SortableAdmin(SortableAdminBase, ModelAdmin):
     Admin class to add template overrides and context objects to enable
     drag-and-drop ordering.
     """
-    ordering = ('order', 'id')
-
-    sortable_change_list_with_sort_link_template = \
-        'adminsortable/change_list_with_sort_link.html'
-    sortable_change_form_template = 'adminsortable/change_form.html'
-    sortable_change_list_template = 'adminsortable/change_list.html'
-    sortable_javascript_includes_template = \
-        'adminsortable/shared/javascript_includes.html'
-
-    change_form_template_extends = 'admin/change_form.html'
-    change_list_template_extends = 'admin/change_list.html'
 
     class Meta:
         abstract = True
-
-    def _get_sortable_foreign_key(self):
-        sortable_foreign_key = None
-        for field in self.model._meta.fields:
-            if isinstance(field, SortableForeignKey):
-                sortable_foreign_key = field
-                break
-        return sortable_foreign_key
 
     def get_urls(self):
         urls = super(SortableAdmin, self).get_urls()
         admin_urls = patterns('',
 
-            # this view changes the order
+            # this ajax view changes the order
             url(r'^sorting/do-sorting/(?P<model_type_id>\d+)/$',
                 self.admin_site.admin_view(self.do_sorting_view),
                 name='admin_do_sorting'),
 
-            # this view shows a link to the drag-and-drop view
+            # this view displays the sortable objects
             url(r'^sort/$', self.admin_site.admin_view(self.sort_view),
                 name='admin_sort'),
         )
@@ -98,11 +92,29 @@ class SortableAdmin(SortableAdminBase, ModelAdmin):
         Custom admin view that displays the objects as a list whose sort
         order can be changed via drag-and-drop.
         """
-        opts = self.model._meta
-        has_perm = request.user.has_perm('{}.{}'.format(opts.app_label,
-            opts.get_change_permission()))
 
-        objects = self.queryset(request)
+        opts = self.model._meta
+        if VERSION >= (1, 8):
+            codename = get_permission_codename('change', opts)
+            has_perm = request.user.has_perm('{0}.{1}'.format(opts.app_label,
+                codename))
+        else:
+            has_perm = request.user.has_perm('{0}.{1}'.format(opts.app_label,
+                opts.get_change_permission()))
+
+        # get sort group index from querystring if present
+        sort_filter_index = request.GET.get('sort_filter')
+
+        filters = {}
+        if sort_filter_index:
+            try:
+                filters = self.model.sorting_filters[int(sort_filter_index)][1]
+            except (IndexError, ValueError):
+                pass
+
+        # Apply any sort filters to create a subset of sortable objects
+        qs_method = getattr(self, 'get_queryset', self.queryset)
+        objects = qs_method(request).filter(**filters)
 
         # Determine if we need to regroup objects relative to a
         # foreign key specified on the model class that is extending Sortable.
@@ -110,8 +122,9 @@ class SortableAdmin(SortableAdminBase, ModelAdmin):
         sortable_by_property = getattr(self.model, 'sortable_by', None)
 
         # `sortable_by` defined as a SortableForeignKey
-        sortable_by_fk = self._get_sortable_foreign_key()
-        sortable_by_class_is_sortable = get_is_sortable(objects)
+        sortable_by_fk = self.model.sortable_foreign_key
+
+        sortable_by_class_is_sortable = check_model_is_sortable(sortable_by_fk)
 
         if sortable_by_property:
             # backwards compatibility for < 1.1.1, where sortable_by was a
@@ -161,9 +174,7 @@ class SortableAdmin(SortableAdminBase, ModelAdmin):
             'group_expression': sortable_by_expression,
             'sortable_by_class': sortable_by_class,
             'sortable_by_class_is_sortable': sortable_by_class_is_sortable,
-            'sortable_by_class_display_name': sortable_by_class_display_name,
-            'sortable_javascript_includes_template':
-            self.sortable_javascript_includes_template
+            'sortable_by_class_display_name': sortable_by_class_display_name
         }
         return render(request, self.sortable_change_list_template, context)
 
@@ -177,7 +188,7 @@ class SortableAdmin(SortableAdminBase, ModelAdmin):
         return super(SortableAdmin, self).add_view(request, form_url,
             extra_context=extra_context)
 
-    def change_view(self, request, object_id, extra_context=None):
+    def change_view(self, request, object_id, form_url='', extra_context=None):
         self.has_sortable_tabular_inlines = False
         self.has_sortable_stacked_inlines = False
 
@@ -189,9 +200,11 @@ class SortableAdmin(SortableAdminBase, ModelAdmin):
         })
 
         for klass in self.inlines:
-            if issubclass(klass, SortableTabularInline) or issubclass(klass, SortableGenericTabularInline):
+            if issubclass(klass, SortableTabularInline) or issubclass(klass,
+                    SortableGenericTabularInline):
                 self.has_sortable_tabular_inlines = True
-            if issubclass(klass, SortableStackedInline) or issubclass(klass, SortableGenericStackedInline):
+            if issubclass(klass, SortableStackedInline) or issubclass(klass,
+                    SortableGenericStackedInline):
                 self.has_sortable_stacked_inlines = True
 
         if self.has_sortable_tabular_inlines or \
@@ -200,8 +213,6 @@ class SortableAdmin(SortableAdminBase, ModelAdmin):
             self.change_form_template = self.sortable_change_form_template
 
             extra_context.update({
-                'sortable_javascript_includes_template':
-                self.sortable_javascript_includes_template,
                 'has_sortable_tabular_inlines':
                 self.has_sortable_tabular_inlines,
                 'has_sortable_stacked_inlines':
@@ -209,7 +220,7 @@ class SortableAdmin(SortableAdminBase, ModelAdmin):
             })
 
         return super(SortableAdmin, self).change_view(request, object_id,
-            extra_context=extra_context)
+            form_url='', extra_context=extra_context)
 
     def do_sorting_view(self, request, model_type_id=None):
         """
@@ -220,21 +231,23 @@ class SortableAdmin(SortableAdminBase, ModelAdmin):
 
         if request.is_ajax() and request.method == 'POST':
             try:
-                indexes = list(map(str, request.POST.get('indexes', []).split(',')))
-                klass = ContentType.objects.get(id=model_type_id).model_class()
+                indexes = list(map(str,
+                    request.POST.get('indexes', []).split(',')))
+                klass = ContentType.objects.get(
+                    id=model_type_id).model_class()
                 objects_dict = dict([(str(obj.pk), obj) for obj in
                     klass.objects.filter(pk__in=indexes)])
-                if '-order' in klass._meta.ordering:  # desc order
+
+                if '-order' in klass._meta.ordering:
+                    step = -1
                     start_object = max(objects_dict.values(),
                         key=lambda x: getattr(x, 'order'))
-                    start_index = getattr(start_object, 'order') \
-                        or len(indexes)
-                    step = -1
-                else:  # 'order' is default, asc order
+                else:
+                    step = 1
                     start_object = min(objects_dict.values(),
                         key=lambda x: getattr(x, 'order'))
-                    start_index = getattr(start_object, 'order') or 0
-                    step = 1
+
+                start_index = getattr(start_object, 'order', len(indexes))
 
                 for index in indexes:
                     obj = objects_dict.get(index)
@@ -242,11 +255,18 @@ class SortableAdmin(SortableAdminBase, ModelAdmin):
                     obj.save()
                     start_index += step
                 response = {'objects_sorted': True}
-            except (KeyError, IndexError, klass.DoesNotExist, AttributeError, ValueError):
+            except (KeyError, IndexError, klass.DoesNotExist,
+                    AttributeError, ValueError):
                 pass
 
         return HttpResponse(json.dumps(response, ensure_ascii=False),
             content_type='application/json')
+
+
+class NonSortableParentAdmin(SortableAdmin):
+    def changelist_view(self, request, extra_context=None):
+        return super(SortableAdminBase, self).changelist_view(request,
+            extra_context=extra_context)
 
 
 class SortableInlineBase(SortableAdminBase, InlineModelAdmin):
@@ -257,18 +277,21 @@ class SortableInlineBase(SortableAdminBase, InlineModelAdmin):
             raise Warning(u'Models that are specified in SortableTabluarInline'
                 ' and SortableStackedInline must inherit from Sortable')
 
-    def queryset(self, request):
-        qs = super(SortableInlineBase, self).queryset(request)
+    def get_queryset(self, request):
+        qs = super(SortableInlineBase, self).get_queryset(request)
         if get_is_sortable(qs):
             self.model.is_sortable = True
         else:
             self.model.is_sortable = False
         return qs
 
+    if VERSION < (1, 6):
+        queryset = get_queryset
+
 
 class SortableTabularInline(TabularInline, SortableInlineBase):
     """Custom template that enables sorting for tabular inlines"""
-    if DJANGO_MINOR_VERSION <= 5:
+    if VERSION <= (1, 5):
         template = 'adminsortable/edit_inline/tabular-1.5.x.html'
     else:
         template = 'adminsortable/edit_inline/tabular.html'
@@ -276,7 +299,7 @@ class SortableTabularInline(TabularInline, SortableInlineBase):
 
 class SortableStackedInline(StackedInline, SortableInlineBase):
     """Custom template that enables sorting for stacked inlines"""
-    if DJANGO_MINOR_VERSION <= 5:
+    if VERSION <= (1, 5):
         template = 'adminsortable/edit_inline/stacked-1.5.x.html'
     else:
         template = 'adminsortable/edit_inline/stacked.html'
@@ -284,7 +307,7 @@ class SortableStackedInline(StackedInline, SortableInlineBase):
 
 class SortableGenericTabularInline(GenericTabularInline, SortableInlineBase):
     """Custom template that enables sorting for tabular inlines"""
-    if DJANGO_MINOR_VERSION <= 5:
+    if VERSION <= (1, 5):
         template = 'adminsortable/edit_inline/tabular-1.5.x.html'
     else:
         template = 'adminsortable/edit_inline/tabular.html'
@@ -292,7 +315,7 @@ class SortableGenericTabularInline(GenericTabularInline, SortableInlineBase):
 
 class SortableGenericStackedInline(GenericStackedInline, SortableInlineBase):
     """Custom template that enables sorting for stacked inlines"""
-    if DJANGO_MINOR_VERSION <= 5:
+    if VERSION <= (1, 5):
         template = 'adminsortable/edit_inline/stacked-1.5.x.html'
     else:
         template = 'adminsortable/edit_inline/stacked.html'

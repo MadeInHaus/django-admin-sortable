@@ -1,12 +1,12 @@
 # Django Admin Sortable
 
-Current version: 1.6.3
+[![Build Status](https://travis-ci.org/iambrandontaylor/django-admin-sortable.svg?branch=master)](https://travis-ci.org/iambrandontaylor/django-admin-sortable)
+
+Current version: 1.7.8
 
 This project makes it easy to add drag-and-drop ordering to any model in
 Django admin. Inlines for a sortable model may also be made sortable,
 enabling individual items or groups of items to be sortable.
-
-=======
 
 ## Supported Django Versions
 If you're using Django 1.4.x, use django-admin-sortable 1.4.9 or below.
@@ -14,9 +14,13 @@ For Django 1.5.x or higher, use the latest version of django-admin-sortable.
 
 django-admin-sortable 1.5.2 introduced backward-incompatible changes for Django 1.4.x
 
+django-admin-sortable 1.6.6 introduced a backward-incompatible change for the `sorting_filters` attribute. Please convert your attributes to the new tuple-based format.
+
+django-admin-sortable 1.7.1 and higher are compatible with Python 3.
+
 
 ## Installation
-1. pip install django-admin-sortable
+1. `$ pip install django-admin-sortable`
 
 --or--
 
@@ -31,13 +35,15 @@ Download django-admin-sortable from [source](https://github.com/iambrandontaylor
 1. Add `adminsortable` to your `INSTALLED_APPS`.
 2. Ensure `django.core.context_processors.static` is in your `TEMPLATE_CONTEXT_PROCESSORS`.
 
+
 ### Static Media
 Preferred:
-Use the [staticfiles app](https://docs.djangoproject.com/en/1.4/ref/contrib/staticfiles/)
+Use the [staticfiles app](https://docs.djangoproject.com/en/1.6/ref/contrib/staticfiles/)
 
 Alternate:
 Copy the `adminsortable` folder from the `static` folder to the
 location you serve static files from.
+
 
 ### Testing
 Have a look at the included sample_project to see working examples.
@@ -56,7 +62,7 @@ Inlines may be drag-and-dropped into any order directly from the change form.
 To add sorting to a model, your model needs to inherit from `Sortable` and
 have an inner Meta class that inherits from `Sortable.Meta`
 
-    #models.py
+    # models.py
     from adminsortable.models import Sortable
 
     class MySortableClass(Sortable):
@@ -68,14 +74,15 @@ have an inner Meta class that inherits from `Sortable.Meta`
         def __unicode__(self):
             return self.title
 
+A common use case is to have child objects that are sortable relative to a parent. If your parent object is also sortable, here's how you would set up your models and admin options:
 
-It is also possible to order objects relative to another object that is a ForeignKey,
-even if that model does not inherit from Sortable:
-
+    # models.py
     from adminsortable.fields import SortableForeignKey
 
-    #models.py
-    class Category(models.Model):
+    class Category(Sortable):
+        class Meta(Sortable.Meta):
+            verbose_name_plural = 'Categories'
+
         title = models.CharField(max_length=50)
         ...
 
@@ -89,10 +96,85 @@ even if that model does not inherit from Sortable:
         def __unicode__(self):
             return self.title
 
+    # admin.py
+    from adminsortable.admin import SortableAdmin
 
-Sortable has one field: `order` and adds a default ordering value set to `order`.
+    from your_app.models import Category, Project
+
+    admin.site.register(Category, SortableAdmin)
+    admin.site.register(Project, SortableAdmin)
+
+
+Sometimes you might have a parent model that is not sortable, but has child models that are. In that case define your models and admin options as such:
+
+    from adminsortable.fields import SortableForeignKey
+
+    # models.py
+    class Category(models.Model):
+        class Meta:
+            verbose_name_plural = 'Categories'
+
+        title = models.CharField(max_length=50)
+        ...
+
+    class Project(Sortable):
+        class Meta(Sortable.Meta):
+            pass
+
+        category = SortableForeignKey(Category)
+        title = models.CharField(max_length=50)
+
+        def __unicode__(self):
+            return self.title
+
+    # admin
+    from adminsortable.admin import NonSortableParentAdmin, SortableStackedInline
+
+    from your_app.models import Category, Project
+
+    class ProjectInline(SortableStackedInline):
+        model = Project
+        extra = 1
+
+    class CategoryAdmin(NonSortableParentAdmin):
+        inlines = [ProjectInline]
+
+    admin.site.register(Category, CategoryAdmin)
+
+The `NonSortableParentAdmin` class is necessary to wire up the additional URL patterns and JavaScript that Django Admin Sortable needs to make your models sortable. The child model does not have to be an inline model, it can be wired directly to Django admin and the objects will be grouped by the non-sortable foreign key when sorting.
+
+
+#### Model Instance Methods
+Each instance of a sortable model has two convenience methods to get the next or previous instance:
+
+    .get_next()
+    .get_previous()
+
+By default, these methods will respect their order in relation to a `SortableForeignKey` field, if present. Meaning, that given the following data:
+
+    | Parent Model 1 |               |
+    |                | Child Model 1 |
+    |                | Child Model 2 |
+    | Parent Model 2 |               |
+    |                | Child Model 3 |
+    |                | Child Model 4 |
+    |                | Child Model 5 |
+
+"Child Model 2" `get_next()` would return `None`
+"Child Model 3" `get_previous` would return `None`
+
+If you wish to override this behavior, pass in: `filter_on_sortable_fk=False`:
+
+    your_instance.get_next(filter_on_sortable_fk=False)
+
+You may also pass in additional ORM "extra_filters" as a dictionary, should you need to:
+
+    your_instance.get_next(extra_filters={'title__icontains': 'blue'})
+
 
 ### Adding Sortable to an existing model
+
+#### Django 1.6.x or below
 If you're adding Sorting to an existing model, it is recommended that you use [django-south](http://south.areacode.com/) to create a schema migration to add the "order" field to your model. You will also need to create a data migration in order to add the appropriate values for the `order` column.
 
 Example assuming a model named "Category":
@@ -103,7 +185,10 @@ Example assuming a model named "Category":
             category.save()
 
 See: [this link](http://south.readthedocs.org/en/latest/tutorial/part3.html) for more
-information on Data Migrations.
+information on South Data Migrations.
+
+#### Django 1.7.x or higher
+Since schema migrations are built into Django 1.7, you don't have to use south, but the process of adding and running migrations is nearly identical. Take a look at the [Migrations](https://docs.djangoproject.com/en/1.7/topics/migrations/) documentation to get started.
 
 
 ### Django Admin Integration
@@ -144,7 +229,19 @@ There are also generic equivalents that you can inherit from:
         """Your generic inline options go here"""
 
 
-### Overriding `queryset()`
+If your parent model is *not* sortable, but has child inlines that are, your parent model needs to inherit from `NonSortableParentAdmin`:
+
+    from adminsortable.admin import (NonSortableParentAdmin,
+        SortableTabularInline)
+
+    class ChildTabularInline(SortableTabularInline):
+        model = YourModel
+
+    class ParentAdmin(NonSortableParentAdmin):
+        inlines = [ChildTabularInline]
+
+
+#### Overriding `queryset()`
 django-admin-sortable supports custom queryset overrides on admin models
 and inline models in Django admin!
 
@@ -184,18 +281,45 @@ may change, and adminsortable won't be able to automatically determine
 if the inline model is sortable from here, which is why we have to set the
 `is_sortable` property of the model in this method.
 
+#### Sorting subsets of objects
+It is also possible to sort a subset of objects in your model by adding a `sorting_filters` tuple. This works exactly the same as `.filter()` on a QuerySet, and is applied *after* `get_queryset()` on the admin class, allowing you to override the queryset as you would normally in admin but apply additional filters for sorting. The text "Change Order of" will appear before each filter in the Change List template, and the filter groups are displayed from left to right in the order listed. If no `sorting_filters` are specified, the text "Change Order" will be displayed for the link.
+
+#### Self-Referential SortableForeignKey
+You can specify a self-referential SortableForeignKey field, however the admin interface will currently show a model that is a grandchild at the same level as a child. I'm working to resolve this issue.
+
+#####Important!
+django-admin-sortable 1.6.6 introduced a backwards-incompatible change for `sorting_filters`. Previously this attribute was defined as a dictionary, so you'll need to change your values over to the new tuple-based format.
+
+An example of sorting subsets would be a "Board of Directors". In this use case, you have a list of "People" objects. Some of these people are on the Board of Directors and some not, and you need to sort them independently.
+
+    class Person(Sortable):
+        class Meta(Sortable.Meta):
+            verbose_name_plural = 'People'
+
+        first_name = models.CharField(max_length=50)
+        last_name = models.CharField(max_length=50)
+        is_board_member = models.BooleanField('Board Member', default=False)
+
+        sorting_filters = (
+            ('Board Members', {'is_board_member': True}),
+            ('Non-Board Members', {'is_board_member': False}),
+        )
+
+        def __unicode__(self):
+            return '{} {}'.format(self.first_name, self.last_name)
+
 #### Extending custom templates
 By default, adminsortable's change form and change list views inherit from
 Django admin's standard templates. Sometimes you need to have a custom change
 form or change list, but also need adminsortable's CSS and JavaScript for
 inline models that are sortable for example.
 
-SortableAdmin has two properties you can override for this use case:
+SortableAdmin has two attributes you can override for this use case:
 
     change_form_template_extends
     change_list_template_extends
 
-These properties have default values of:
+These attributes have default values of:
 
     change_form_template_extends = 'admin/change_form.html'
     change_list_template_extends = 'admin/change_list.html'
@@ -215,7 +339,6 @@ The height of a stacked inline model can dynamically increase,
 which can make them difficult to sort. If you anticipate the height of a
 stacked inline is going to be very tall, I would suggest using
 TabularStackedInline instead.
-
 
 ### Django-CMS integration
 Django-CMS plugins use their own change form, and thus won't automatically
@@ -269,13 +392,6 @@ with:
     <script type="text/javascript" src="{% static 'adminsortable/js/admin.sortable.tabular.inlines.js' %}"></script>
 
 
-### Known Issue(s)
-Because of the way inline models are added to their parent model in the
-change form, it is not currently possible to have sortable inline models
-whose parent does not inhert from `Sortable`. A workaround is currently
-being investigated.
-
-
 ### Rationale
 Other projects have added drag-and-drop ordering to the ChangeList
 view, however this introduces a couple of problems...
@@ -293,15 +409,21 @@ ordering on top of that just seemed a little much in my opinion.
 django-admin-sortable is currently used in production.
 
 
-### What's new in 1.6.3?
-- German localization - danke [Alp-Phone](https://github.com/Alp-Phone)
-- JavaScript drag and drop handlers now work as expected if only Generic Inline models are present
+### What's new in 1.7.8?
+- Limited support for self-referential SortableForeignKeys
+- Improved support for sortable models that have a foreign key to a non-sortable parent
+
+
+### Deprecation warnings
+There are a couple of Django 1.8 deprecation warnings that will be shown when using Python 3.x. These are regarding the following classes in Django that django-admin-sortable extends:
+- django/forms/widgets.py: ComponentInline.queryset
+- django/forms/widgets.py: WidgetAdmin.queryset
+
+These do not currently affect the functionality of django-admin-sortable and should go away once the underlying classes have been updated.
 
 
 ### Future
 - Support for foreign keys that are self referential
-- Move unit tests out of sample project (I could really use some help with this one)
-- Travis CI integration
 
 
 ### License

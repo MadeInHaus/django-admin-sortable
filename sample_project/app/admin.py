@@ -1,10 +1,12 @@
 from django.contrib import admin
 
 from adminsortable.admin import (SortableAdmin, SortableTabularInline,
-    SortableStackedInline, SortableGenericStackedInline)
+    SortableStackedInline, SortableGenericStackedInline,
+    NonSortableParentAdmin)
 from adminsortable.utils import get_is_sortable
 from app.models import (Category, Widget, Project, Credit, Note, GenericNote,
-    Component)
+    Component, Person, NonSortableCategory, SortableCategoryWidget,
+    SortableNonInlineCategory, NonSortableCredit, NonSortableNote)
 
 
 admin.site.register(Category, SortableAdmin)
@@ -41,6 +43,7 @@ admin.site.register(Widget, WidgetAdmin)
 
 class CreditInline(SortableTabularInline):
     model = Credit
+    extra = 1
 
 
 class NoteInline(SortableStackedInline):
@@ -53,8 +56,41 @@ class GenericNoteInline(SortableGenericStackedInline):
     extra = 0
 
 
+class NonSortableCreditInline(admin.TabularInline):
+    model = NonSortableCredit
+    extra = 1
+
+
+class NonSortableNoteInline(admin.StackedInline):
+    model = NonSortableNote
+    extra = 0
+
+
 class ProjectAdmin(SortableAdmin):
-    inlines = [CreditInline, NoteInline, GenericNoteInline]
-    list_display = ['__unicode__', 'category']
+    inlines = [
+        CreditInline, NoteInline, GenericNoteInline,
+        NonSortableCreditInline, NonSortableNoteInline
+    ]
+    list_display = ['__str__', 'category']
 
 admin.site.register(Project, ProjectAdmin)
+
+
+class PersonAdmin(SortableAdmin):
+    list_display = ['__str__', 'is_board_member']
+
+admin.site.register(Person, PersonAdmin)
+
+
+class SortableCategoryWidgetInline(SortableStackedInline):
+    model = SortableCategoryWidget
+    extra = 0
+
+
+class NonSortableCategoryAdmin(NonSortableParentAdmin):
+    inlines = [SortableCategoryWidgetInline]
+
+admin.site.register(NonSortableCategory, NonSortableCategoryAdmin)
+
+
+admin.site.register(SortableNonInlineCategory, SortableAdmin)

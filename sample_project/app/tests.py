@@ -1,21 +1,18 @@
-import httplib
+try:
+    import httplib
+except ImportError:
+    import http.client as httplib
+
 import json
 
 from django.contrib.auth.models import User
-from django.core.urlresolvers import reverse
 from django.db import models
 from django.test import TestCase
-from django.test.client import Client, RequestFactory
+from django.test.client import Client
 
-from adminsortable.fields import SortableForeignKey
 from adminsortable.models import Sortable
 from adminsortable.utils import get_is_sortable
-from app.models import Category, Credit, Note
-
-
-class BadSortableModel(models.Model):
-    note = SortableForeignKey(Note)
-    credit = SortableForeignKey(Credit)
+from app.models import Category, Person
 
 
 class TestSortableModel(Sortable):
@@ -28,13 +25,26 @@ class TestSortableModel(Sortable):
 class SortableTestCase(TestCase):
     def setUp(self):
         self.client = Client()
-        self.factory = RequestFactory()
         self.user_raw_password = 'admin'
         self.user = User.objects.create_user('admin', 'admin@admin.com',
             self.user_raw_password)
         self.user.is_staff = True
         self.user.is_superuser = True
         self.user.save()
+
+        # create people
+        Person.objects.create(first_name='Bob', last_name='Smith',
+            is_board_member=True)
+        Person.objects.create(first_name='Sally', last_name='Sue',
+            is_board_member=False)
+        Person.objects.create(first_name='Mike', last_name='Wilson',
+            is_board_member=True)
+        Person.objects.create(first_name='Robert', last_name='Roberts',
+            is_board_member=True)
+
+        people = Person.objects.all()
+        self.first_person = people[0]
+        self.second_person = people[1]
 
     def create_category(self, title='Category 1'):
         category = Category.objects.create(title=title)
@@ -112,7 +122,8 @@ class SortableTestCase(TestCase):
         #make a normal POST
         response = self.client.post(self.get_sorting_url(),
             data=self.get_category_indexes(category1, category2, category3))
-        content = json.loads(response.content)
+        content = json.loads(response.content.decode(encoding='UTF-8'),
+            'latin-1')
         self.assertFalse(content.get('objects_sorted'),
             'Objects should not have been sorted. An ajax post is required.')
 
@@ -128,7 +139,8 @@ class SortableTestCase(TestCase):
         response = self.client.post(self.get_sorting_url(),
             data=self.get_category_indexes(category3, category2, category1),
             HTTP_X_REQUESTED_WITH='XMLHttpRequest')
-        content = json.loads(response.content)
+        content = json.loads(response.content.decode(encoding='UTF-8'),
+            'latin-1')
         self.assertTrue(content.get('objects_sorted'),
             'Objects should have been sorted.')
 
@@ -152,3 +164,15 @@ class SortableTestCase(TestCase):
             'Third category returned should have order == 3')
         self.assertEqual(cat3.pk, 1,
             'Category ID 1 should have been third in queryset')
+
+    def test_get_next(self):
+        result = self.first_person.get_next()
+
+        self.assertEqual(self.second_person, result, 'Next person should '
+            'be "{0}"'.format(self.second_person))
+
+    def test_get_previous(self):
+        result = self.second_person.get_previous()
+
+        self.assertEqual(self.first_person, result, 'Previous person should '
+            'be "{0}"'.format(self.first_person))
